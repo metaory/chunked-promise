@@ -50,22 +50,119 @@ await chunk([
 
 Both functions accept an options object:
 
-```javascript
-await chunk(tasks, 4, {
-  onProgress: ({ done, total, results }) => {},  // Progress callback
-  signal: AbortSignal,                            // Cancellation
-  timeout: 5000,                                  // Per-task timeout (ms)
-  rateLimit: 10,                                  // Max tasks per second
-})
-```
+| Option | Type | Description |
+|--------|------|-------------|
+| `onProgress` | `function` | Called after each task with `{ done, total, results }` |
+| `signal` | `AbortSignal` | Cancel execution via AbortController |
+| `timeout` | `number` | Per-task timeout in milliseconds |
+| `rateLimit` | `number` | Max tasks per second (0 = unlimited) |
+
+### Results (Settled Mode)
 
 Results use settled mode (like `Promise.allSettled`):
 
 ```javascript
-[
-  { status: 'fulfilled', value: result },
-  { status: 'rejected', reason: error },
-]
+const results = await chunk(tasks, 4)
+
+// [
+//   { status: 'fulfilled', value: result },
+//   { status: 'rejected', reason: error },
+// ]
+
+// Filter successes
+const values = results
+  .filter(r => r.status === 'fulfilled')
+  .map(r => r.value)
+
+// Filter failures
+const errors = results
+  .filter(r => r.status === 'rejected')
+  .map(r => r.reason)
+```
+
+### Progress Callback
+
+```javascript
+await chunk(tasks, 4, {
+  onProgress: ({ done, total, results }) => {
+    console.log(`${done}/${total} complete`)
+    const pct = Math.round((done / total) * 100)
+    progressBar.style.width = `${pct}%`
+  }
+})
+```
+
+### Cancellation
+
+```javascript
+import { chunk, AbortError } from 'chunked-promise'
+
+const controller = new AbortController()
+
+// Cancel after 5 seconds
+setTimeout(() => controller.abort(), 5000)
+
+try {
+  await chunk(tasks, 4, { signal: controller.signal })
+} catch (e) {
+  if (e instanceof AbortError) {
+    console.log('Cancelled!')
+  }
+}
+```
+
+### Timeout
+
+```javascript
+import { chunk, TimeoutError } from 'chunked-promise'
+
+const results = await chunk(tasks, 4, { timeout: 3000 })
+
+// Check for timeouts
+results.forEach((r, i) => {
+  if (r.status === 'rejected' && r.reason instanceof TimeoutError) {
+    console.log(`Task ${i} timed out`)
+  }
+})
+```
+
+### Rate Limiting
+
+```javascript
+// Max 10 requests per second
+await chunk(apiCalls, 4, { rateLimit: 10 })
+```
+
+### Combined Example
+
+```javascript
+import { chunk, AbortError, TimeoutError } from 'chunked-promise'
+
+const controller = new AbortController()
+
+const results = await chunk(tasks, 4, {
+  signal: controller.signal,
+  timeout: 5000,
+  rateLimit: 10,
+  onProgress: ({ done, total }) => {
+    console.log(`Progress: ${done}/${total}`)
+  }
+})
+
+const succeeded = results.filter(r => r.status === 'fulfilled').length
+const failed = results.filter(r => r.status === 'rejected').length
+console.log(`Done: ${succeeded} succeeded, ${failed} failed`)
+```
+
+## Exports
+
+```javascript
+import { 
+  q,            // Queue execution (sequential)
+  chunk,        // Chunk execution (parallel batches)
+  AbortError,   // Thrown on cancellation
+  TimeoutError  // Thrown on timeout
+} from 'chunked-promise'
 ```
 
 ## Demo
