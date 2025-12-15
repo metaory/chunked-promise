@@ -708,6 +708,10 @@
               <span class="control-unit">/s</span>
             </div>
           </div>
+          <label class="control-check"
+            ><input type="checkbox" id="poolmode" checked />
+            Pool</label
+          >
           <span class="control-spacer"></span>
           <button class="btn-run" id="btn-run" onclick="run()">Run</button>
           <button
@@ -794,6 +798,7 @@
       import {
         q,
         chunk,
+        createPool,
         AbortError,
         TimeoutError,
       } from "./src/chunked-promise.js";
@@ -881,6 +886,8 @@
         const timeout = val("timeout") || undefined;
         const failRate = val("failrate");
         const rateLimit = val("ratelimit") || undefined;
+        const usePool = $("poolmode").checked;
+        const pool = usePool ? createPool({ rateLimit }) : null;
 
         reset();
         const RANDOM_MIN = 200;
@@ -893,6 +900,7 @@
         if (timeout) configDesc += `, timeout=${timeout}ms`;
         if (failRate) configDesc += `, fail=${failRate}%`;
         if (rateLimit) configDesc += `, rate=${rateLimit}/s`;
+        if (pool) configDesc += ` [pool]`;
         log(`Starting: ${configDesc}`, "i");
 
         const getDelay = () =>
@@ -946,68 +954,58 @@
             });
           };
 
-        // Run q()
         let qMs = 0,
           cMs = 0;
         let qCancelled = false,
           cCancelled = false;
 
-        try {
+        const runQ = async () => {
           log("--- q() ---", "i");
           const t0 = performance.now();
           const qTasks = makeTasks("tasks-q", "q");
-          await q(qTasks, {
+          const qFn = pool ? pool.q : q;
+          await qFn(qTasks, {
             signal: abortController.signal,
             timeout,
-            rateLimit,
+            rateLimit: pool ? undefined : rateLimit,
             onProgress: makeOnProgress("tasks-q", "q"),
           });
           qMs = Math.round(performance.now() - t0);
           $("time-q").textContent = `${qMs}ms`;
           log(`q() done in ${qMs}ms`, "s");
-        } catch (e) {
-          if (e.name === "AbortError") {
-            qCancelled = true;
-            log("q() cancelled", "w");
-            // Mark remaining tasks as cancelled
-            document
-              .querySelectorAll("#tasks-q .task:not([data-state])")
-              .forEach((el) => {
-                el.setAttribute("data-state", "cancelled");
-              });
-          } else {
-            log(`q() error: ${e.message}`, "e");
-          }
-        }
+        };
 
-        // Run chunk() only if not cancelled
-        if (!qCancelled) {
-          try {
-            log(`--- chunk(fns, ${size}) ---`, "i");
-            const t1 = performance.now();
-            const cTasks = makeTasks("tasks-c", "chunk");
-            await chunk(cTasks, size, {
-              signal: abortController.signal,
-              timeout,
-              rateLimit,
-              onProgress: makeOnProgress("tasks-c", "chunk"),
-            });
-            cMs = Math.round(performance.now() - t1);
-            $("time-c").textContent = `${cMs}ms`;
-            log(`chunk() done in ${cMs}ms`, "s");
-          } catch (e) {
-            if (e.name === "AbortError") {
-              cCancelled = true;
-              log("chunk() cancelled", "w");
-              document
-                .querySelectorAll("#tasks-c .task:not([data-state])")
-                .forEach((el) => {
-                  el.setAttribute("data-state", "cancelled");
-                });
-            } else {
-              log(`chunk() error: ${e.message}`, "e");
-            }
-          }
+        const runChunk = async () => {
+          log(`--- chunk(fns, ${size}) ---`, "i");
+          const t1 = performance.now();
+          const cTasks = makeTasks("tasks-c", "chunk");
+          const chunkFn = pool ? pool.chunk : chunk;
+          await chunkFn(cTasks, size, {
+            signal: abortController.signal,
+            timeout,
+            rateLimit: pool ? undefined : rateLimit,
+            onProgress: makeOnProgress("tasks-c", "chunk"),
+          });
+          cMs = Math.round(performance.now() - t1);
+          $("time-c").textContent = `${cMs}ms`;
+          log(`chunk() done in ${cMs}ms`, "s");
+        };
+
+        const handleErr = (panel) => (e) => {
+          if (e.name !== "AbortError") return log(`${panel}() error: ${e.message}`, "e");
+          if (panel === "q") qCancelled = true;
+          else cCancelled = true;
+          log(`${panel}() cancelled`, "w");
+          document.querySelectorAll(`#tasks-${panel === "q" ? "q" : "c"} .task:not([data-state])`)
+            .forEach((el) => el.setAttribute("data-state", "cancelled"));
+        };
+
+        // Pool mode: run in parallel to show shared rate limiting
+        if (pool) {
+          await Promise.all([runQ().catch(handleErr("q")), runChunk().catch(handleErr("chunk"))]);
+        } else {
+          await runQ().catch(handleErr("q"));
+          if (!qCancelled) await runChunk().catch(handleErr("chunk"));
         }
 
         // Show stats
@@ -1016,7 +1014,7 @@
           $("stat-c").textContent = `${cMs}ms`;
           $("stats").hidden = false;
           const speedup = cMs > 0 ? (qMs / cMs).toFixed(1) : "∞";
-          log(`chunk() was ${speedup}x faster!`, "s");
+          log(pool ? `Both ran in parallel with shared rate limit` : `chunk() was ${speedup}x faster!`, "s");
         }
 
         running = false;

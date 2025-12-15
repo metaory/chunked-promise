@@ -103,20 +103,19 @@ const getRateLimitDelay = (timestamps, rateLimit) => {
  * @returns {Promise<TaskResult[]>}
  */
 export const q = async (fns, opts = {}) => {
-  const { onProgress, signal, timeout, rateLimit } = opts
+  const { onProgress, signal, timeout, rateLimit, _state } = opts
   const results = []
-  const timestamps = []
+  const timestamps = _state?.timestamps ?? []
   const total = fns.length
 
   for (const fn of fns) {
     checkAbort(signal)
 
-    // Rate limiting
+    // Rate limiting (shared or local)
     if (rateLimit) {
       const delay = getRateLimitDelay(timestamps, rateLimit)
       if (delay > 0) await new Promise(r => setTimeout(r, delay))
       timestamps.push(Date.now())
-      // Keep only last second of timestamps
       while (timestamps.length > rateLimit) timestamps.shift()
     }
 
@@ -141,9 +140,9 @@ export const q = async (fns, opts = {}) => {
  * @returns {Promise<TaskResult[]>}
  */
 export const chunk = async (fns, n = 5, opts = {}) => {
-  const { onProgress, signal, timeout, rateLimit } = opts
+  const { onProgress, signal, timeout, rateLimit, _state } = opts
   const results = []
-  const timestamps = []
+  const timestamps = _state?.timestamps ?? []
   const total = fns.length
   let index = 0
 
@@ -153,19 +152,17 @@ export const chunk = async (fns, n = 5, opts = {}) => {
     const batch = fns.slice(index, index + n)
     const batchResults = await Promise.all(
       batch.map(async (fn, i) => {
-        // Rate limiting within batch
+        // Rate limiting (shared or local)
         if (rateLimit) {
           const delay = getRateLimitDelay(timestamps, rateLimit)
           if (delay > 0) await new Promise(r => setTimeout(r, delay))
           timestamps.push(Date.now())
-          // Keep only last second of timestamps
           while (timestamps.length > rateLimit * 2) timestamps.shift()
         }
 
         checkAbort(signal)
         const result = await execTask(fn, timeout)
 
-        // Progress callback per task
         if (onProgress) {
           const done = results.length + batch.slice(0, i + 1).filter(() => true).length
           onProgress({ done: Math.min(done, total), total, results: [...results, result] })
@@ -178,11 +175,28 @@ export const chunk = async (fns, n = 5, opts = {}) => {
     results.push(...batchResults)
     index += n
 
-    // Progress callback after batch (accurate count)
     if (onProgress) {
       onProgress({ done: results.length, total, results: [...results] })
     }
   }
 
   return results
+}
+
+/**
+ * Create a pool with shared rate limiting state
+ * @param {Options} [poolOpts={}] - Default options for all pool operations
+ * @returns {{ chunk: typeof chunk, q: typeof q }}
+ */
+export const createPool = (poolOpts = {}) => {
+  const _state = { timestamps: [] }
+  const merge = (opts = {}) => {
+    const merged = { ...poolOpts, _state }
+    for (const k in opts) if (opts[k] !== undefined) merged[k] = opts[k]
+    return merged
+  }
+  return {
+    chunk: (fns, n, opts) => chunk(fns, n, merge(opts)),
+    q: (fns, opts) => q(fns, merge(opts))
+  }
 }

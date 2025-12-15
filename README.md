@@ -48,6 +48,17 @@ await chunk([
 ], 2)  // [1,2] → [3,4]
 ```
 
+### `createPool(opts?)`
+
+Create a pool with shared rate limiting across multiple calls.
+
+```javascript
+const pool = createPool({ rateLimit: 10 })
+
+pool.chunk(tasks, 5)  // uses pool's rate limit
+pool.q(moreTasks)     // shares same rate limit
+```
+
 ### Options
 
 Both functions accept an options object:
@@ -135,6 +146,24 @@ results.forEach((r, i) => {
 await chunk(apiCalls, 4, { rateLimit: 10 })
 ```
 
+### Pool (Shared Rate Limiting)
+
+Use `createPool` when multiple `chunk`/`q` calls need to share a single rate limiter:
+
+```javascript
+import { createPool } from 'chunked-promise'
+
+const api = createPool({ rateLimit: 10 })
+
+// Both share the same 10/s rate limit
+await Promise.all([
+  api.chunk(userTasks, 5),
+  api.q(adminTasks)
+])
+```
+
+Without a pool, each call has its own rate limiter. With a pool, the combined throughput respects the shared limit.
+
 ### Combined Example
 
 ```javascript
@@ -162,6 +191,7 @@ console.log(`Done: ${succeeded} succeeded, ${failed} failed`)
 import { 
   q,            // Queue execution (sequential)
   chunk,        // Chunk execution (parallel batches)
+  createPool,   // Shared rate limiting pool
   AbortError,   // Thrown on cancellation
   TimeoutError  // Thrown on timeout
 } from 'chunked-promise'
